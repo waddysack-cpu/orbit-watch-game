@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="disabled-adaptations" content="watch">
+<title>Orbit Tap</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function () {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  let W, H, R, cx, cy, dpr;
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx = W / 2; cy = H / 2;
+    R = Math.min(W, H) * 0.36;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  let best = 0;
+  try { best = +localStorage.getItem('orbitBest') || 0; } catch (e) {}
+
+  const TAU = Math.PI * 2;
+  let state = 'menu';            // menu | play | over
+  let angle, dir, speed, score, star, hazards, spawnT, flash, last;
+
+  function angDist(a, b) {
+    let d = Math.abs(a - b) % TAU;
+    return d > Math.PI ? TAU - d : d;
+  }
+
+  function freeAngle(minGap) {
+    for (let i = 0; i < 40; i++) {
+      const a = Math.random() * TAU;
+      if (angDist(a, angle) < minGap) continue;
+      if (hazards.some(h => angDist(a, h.a) < 0.45)) continue;
+      return a;
+    }
+    return angle + Math.PI;
+  }
+
+  function start() {
+    angle = -Math.PI / 2; dir = 1; speed = 1.8; score = 0;
+    hazards = []; spawnT = 1.5; flash = 0;
+    star = freeAngle(1.2);
+    state = 'play';
+  }
+
+  function tap(e) {
+    if (e) e.preventDefault();
+    if (state === 'play') dir = -dir;
+    else if (state === 'over' && flash <= 0) start();
+    else if (state === 'menu') start();
+  }
+  cv.addEventListener('touchstart', tap, { passive: false });
+  cv.addEventListener('mousedown', tap);
+  window.addEventListener('keydown', e => { if (e.code === 'Space') tap(e); });
+
+  function update(dt) {
+    if (state !== 'play') { if (flash > 0) flash -= dt; return; }
+    angle = (angle + dir * speed * dt + TAU) % TAU;
+
+    // collect star
+    if (angDist(angle, star) < 0.2) {
+      score++;
+      speed = Math.min(4.2, speed + 0.08);
+      star = freeAngle(1.2);
+    }
+
+    // spawn hazards
+    spawnT -= dt;
+    if (spawnT <= 0) {
+      hazards.push({ a: freeAngle(0.9), life: 4 + Math.random() * 2, age: 0 });
+      spawnT = Math.max(0.7, 2.2 - score * 0.05);
+    }
+
+    hazards.forEach(h => { h.age += dt; h.life -= dt; });
+    hazards = hazards.filter(h => h.life > 0);
+
+    // collision (hazard only dangerous once fully armed)
+    for (const h of hazards) {
+      if (h.age > 0.6 && angDist(angle, h.a) < 0.16) {
+        state = 'over'; flash = 0.6;
+        if (score > best) { best = score; try { localStorage.setItem('orbitBest', best); } catch (e) {} }
+        if (navigator.vibrate) try { navigator.vibrate(80); } catch (e) {}
+        break;
+      }
+    }
+  }
+
+  function dot(a, r, color, size) {
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, size, 0, TAU);
+    ctx.fillStyle = color; ctx.fill();
+  }
+
+  function text(t, y, size, color) {
+    ctx.fillStyle = color;
+    ctx.font = '600 ' + size + 'px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(t, cx, y);
+  }
+
+  function draw() {
+    const s = Math.min(W, H);
+    ctx.fillStyle = state === 'over' && flash > 0 ? '#3a0000' : '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // ring
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU);
+    ctx.strokeStyle = '#222'; ctx.lineWidth = s * 0.03; ctx.stroke();
+
+    if (state === 'menu') {
+      text('ORBIT', cy - s * 0.08, s * 0.14, '#fff');
+      text('tap to start', cy + s * 0.08, s * 0.065, '#8f8');
+      text('tap = reverse', cy + s * 0.17, s * 0.05, '#666');
+      return;
+    }
+
+    // hazards
+    for (const h of hazards) {
+      const armed = h.age > 0.6;
+      const fade = Math.min(1, h.life / 0.5);
+      ctx.globalAlpha = armed ? fade : 0.35 + 0.3 * Math.sin(h.age * 30);
+      dot(h.a, R, '#ff3b30', s * 0.035);
+      ctx.globalAlpha = 1;
+    }
+
+    // star
+    const pulse = 1 + 0.15 * Math.sin(performance.now() / 150);
+    dot(star, R, '#ffd60a', s * 0.03 * pulse);
+
+    // player
+    dot(angle, R, '#30d158', s * 0.042);
+
+    // score
+    text(String(score), cy, s * 0.2, '#fff');
+
+    if (state === 'over') {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, W, H);
+      text('GAME OVER', cy - s * 0.12, s * 0.09, '#ff453a');
+      text(String(score), cy + s * 0.01, s * 0.16, '#fff');
+      text('best ' + best, cy + s * 0.13, s * 0.055, '#aaa');
+      if (flash <= 0) text('tap to retry', cy + s * 0.22, s * 0.05, '#8f8');
+    }
+  }
+
+  function loop(t) {
+    const dt = last ? Math.min(0.05, (t - last) / 1000) : 0;
+    last = t;
+    update(dt); draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
